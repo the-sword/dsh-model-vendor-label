@@ -1,6 +1,6 @@
 {
   "name": "dsh-model-vendor-label",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "模型选择器显示模型 id 而不是展示名；设置里可一键切回 DSH 默认显示。",
   "type": "module",
   "main": "./index.js",
