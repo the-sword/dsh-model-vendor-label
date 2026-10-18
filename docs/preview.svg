@@ -1,0 +1,28 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="680" height="220" viewBox="0 0 680 220" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', sans-serif">
+  <rect width="680" height="220" fill="#f6f7f9"/>
+  <text x="32" y="40" font-size="15" fill="#1c1d21" font-weight="600">模型选择器（示意）</text>
+  <text x="32" y="64" font-size="12" fill="#6b6f76">所有行直接显示模型 id，悬停可见展示名；官方 1017 徽标保留</text>
+
+  <g>
+    <rect x="32" y="84" width="332" height="38" rx="10" fill="#ffffff" stroke="#dcdfe4"/>
+    <text x="48" y="108" font-size="13" fill="#1c1d21">deepseek-flash</text>
+    <rect x="152" y="94" width="44" height="20" rx="10" fill="#eef1f6"/>
+    <text x="161" y="108" font-size="11" fill="#5b6270">1017</text>
+
+    <rect x="32" y="132" width="332" height="38" rx="10" fill="#ffffff" stroke="#dcdfe4"/>
+    <text x="48" y="156" font-size="13" fill="#1c1d21">deepseek-v4.1-flash</text>
+
+    <rect x="32" y="180" width="332" height="38" rx="10" fill="#ffffff" stroke="#dcdfe4"/>
+    <text x="48" y="204" font-size="13" fill="#1c1d21">workbuddy/kimi-k3-1</text>
+  </g>
+
+  <g>
+    <rect x="396" y="84" width="252" height="38" rx="10" fill="#ffffff" stroke="#dcdfe4"/>
+    <text x="412" y="108" font-size="13" fill="#1c1d21">group/auto-deepseek-flash</text>
+
+    <rect x="396" y="132" width="252" height="38" rx="10" fill="#ffffff" stroke="#dcdfe4"/>
+    <text x="412" y="156" font-size="13" fill="#1c1d21">sensenova/deepseek-flash</text>
+
+    <text x="396" y="200" font-size="11" fill="#8a8f98">同名不同渠道的模型，id 各不相同，一眼可辨</text>
+  </g>
+</svg>

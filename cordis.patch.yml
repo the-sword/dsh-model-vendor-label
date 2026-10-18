@@ -1,0 +1,9 @@
+# dsh-model-vendor-label bundle patch.
+#
+# One insert mounts the Host half; the browser half rides package.json's
+# dsh.client declaration and is bound to THIS row (the bare package name —
+# a subpath row would not carry it).
+- insert:
+    - id: model-vendor-label
+      name: 'dsh-model-vendor-label'
+      config: {}
