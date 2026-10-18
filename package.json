@@ -1,7 +1,7 @@
 {
   "name": "dsh-model-vendor-label",
-  "version": "0.3.0",
-  "description": "显示模型 id 而不是展示名：接管模型选择器的 label 槽位，并让客户端模型目录渲染 id（悬停仍可看到原名）。",
+  "version": "0.4.0",
+  "description": "模型选择器显示模型 id 而不是展示名；设置里可一键切回 DSH 默认显示。",
   "type": "module",
   "main": "./index.js",
   "exports": {
@@ -42,6 +42,9 @@
         "@deepseek-ai/dsh-client-ui-renderer"
       ]
     }
+  },
+  "dependencies": {
+    "@deepseek-ai/schemastery": "~3.18.5"
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.2"

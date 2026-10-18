@@ -20,7 +20,15 @@ function createElement(type, props, ...children) {
 
 /** Just enough React for the bundle. */
 function stubReact() {
-  return { createElement }
+  return {
+    createElement,
+    // The settings row keeps two pieces of write state; the stub holds them in
+    // plain closure variables since no renderer re-runs the component.
+    useState(initial) {
+      let value = initial
+      return [value, next => { value = typeof next === 'function' ? next(value) : next }]
+    },
+  }
 }
 
 /** One catalog entry with provider-chosen display copy. */
@@ -82,8 +90,22 @@ function makeContext(options = {}) {
     },
     modelDirectories: { directoryFor: () => directory },
     slots: {
+      // The real slots.inject returns the registration's disposer, which is
+      // how the switch withdraws a whole face. The stub answers in kind, and
+      // remembers the disposer so a test can observe a withdrawal.
       inject(name, occupy) {
         registrations.push({ name, occupy })
+        let dispose
+        const proxy = {
+          slots: {
+            register: (opts, component) => {
+              dispose = ctx.slots.register(opts, component)
+              return dispose
+            },
+          },
+        }
+        const returned = occupy(proxy)
+        return typeof returned === 'function' ? returned : dispose
       },
       register(opts, component) {
         seated.push({ opts, component })
@@ -97,7 +119,39 @@ function makeContext(options = {}) {
     },
     logger: { warn: (...args) => warnings.push(args) },
   }
+  if (options.form !== undefined) {
+    ctx.configForms = {
+      get: () => options.form,
+      whileServed: (_namespaces, register) => register(new Set(['model-vendor-label'])),
+    }
+  }
   return { ctx, disposers, registrations, seated, warnings, store, directory }
+}
+
+/** A settable fake of the Host config form the switch reads and writes. */
+function makeForm(initial) {
+  const listeners = new Set()
+  let value = { enabled: initial }
+  return {
+    getSnapshot: () => ({ value }),
+    subscribe(listener) {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
+    },
+    async set(field, next) {
+      value = { ...value, [field]: next }
+      for (const listener of listeners) listener()
+      return true
+    },
+    /** Flip without going through the form, as a Host-side edit would. */
+    publish(next) {
+      value = { ...value, enabled: next }
+      for (const listener of listeners) listener()
+    },
+    get written() {
+      return value
+    },
+  }
 }
 
 /** Resolve what an injected slot calls back into: runs the occupy thunk. */
@@ -271,6 +325,84 @@ test('the composer seat settles every store it is handed, and unload restores it
   assert.equal(Object.hasOwn(catalog[0].models[0], t.ORIGINAL_NAME), false)
 })
 
+
+test('the switch is respected at load: off leaves the shipped label alone', () => {
+  const catalog = groups()
+  const form = makeForm(false)
+  const { ctx, registrations } = makeContext({ groups: catalog, picker: function ModelSelect() {}, form })
+  api.apply(ctx)
+  // Only the settings row itself is registered; the picker keeps the shipped label.
+  assert.deepEqual(registrations.map(entry => entry.name), [api.__test.SETTINGS_ROW])
+  // The catalog keeps its provider-chosen names while the switch is off.
+  assert.equal(catalog[0].models[0].name, 'DeepSeek-V4.1-Flash')
+})
+
+test('turning the switch off restores the shipped rendering, on brings it back', () => {
+  const catalog = groups()
+  const form = makeForm(true)
+  // A register() that tracks live occupants, so withdrawing is observable.
+  const live = new Set()
+  const { ctx, registrations } = makeContext({ groups: catalog, picker: function ModelSelect() {}, form })
+  const register = ctx.slots.register
+  ctx.slots.register = (opts, component) => {
+    register(opts, component)
+    live.add(opts.name)
+    return () => {
+      live.delete(opts.name)
+    }
+  }
+  api.apply(ctx)
+  assert.equal(catalog[0].models[0].name, 'deepseek-v4.1-flash')
+  assert.ok(live.has(api.__test.LABEL_SLOT))
+
+  form.publish(false)
+  assert.equal(catalog[0].models[0].name, 'DeepSeek-V4.1-Flash', 'display names come back')
+  assert.equal(live.has(api.__test.LABEL_SLOT), false, 'the label slot goes back to the shipped plugin')
+
+  form.publish(true)
+  assert.equal(catalog[0].models[0].name, 'deepseek-v4.1-flash', 'the id is painted again')
+  assert.ok(live.has(api.__test.LABEL_SLOT))
+})
+
+test('the switch is idempotent: repeated on/off never double-registers', () => {
+  const form = makeForm(true)
+  const { ctx, registrations } = makeContext({ picker: function ModelSelect() {}, form })
+  api.apply(ctx)
+  const afterApply = registrations.length
+  form.publish(true)
+  form.publish(true)
+  assert.equal(registrations.length, afterApply)
+  form.publish(false)
+  const afterOff = registrations.length
+  form.publish(false)
+  assert.equal(registrations.length, afterOff)
+})
+
+test('the settings row asks for a write and reports failure without crashing', async () => {
+  const writes = []
+  const form = {
+    getSnapshot: () => ({ value: { enabled: true } }),
+    subscribe: () => () => {},
+    set: async (field, next) => {
+      writes.push([field, next])
+      return true
+    },
+  }
+  const Switch = props => ({ type: 'switch', props })
+  const rendered = api.__test.SettingsRow({
+    enabled: true,
+    setEnabled: next => form.set('enabled', next),
+    Switch,
+  })
+  assert.equal(rendered.type, 'div')
+  const switchNode = rendered.children[1]
+  assert.equal(switchNode.type, Switch)
+  assert.equal(switchNode.props.checked, true)
+  switchNode.props.onChange(false)
+  await Promise.resolve()
+  assert.deepEqual(writes, [['enabled', false]])
+})
+
 test('the package declares the client-half contract the loader binds', () => {
   const pkg = JSON.parse(readFileSync(new URL('../package.json', import.meta.url), 'utf8'))
   assert.equal(pkg.name, 'dsh-model-vendor-label')
@@ -279,5 +411,17 @@ test('the package declares the client-half contract the loader binds', () => {
   assert.equal(pkg.dsh.bundle.patch, './cordis.patch.yml')
   assert.ok(pkg.files.includes('client.js'))
   assert.equal(typeof api.apply, 'function')
-  assert.deepEqual([...api.inject], ['slots', 'modelDirectories'])
+  assert.deepEqual([...api.inject], ['slots', 'modelDirectories', 'configForms'])
+})
+
+test('the Host half declares the persisted switch and defaults it to on', async () => {
+  const host = await import('../index.js')
+  assert.equal(host.SETTINGS_NAMESPACE, 'model-vendor-label')
+  const schema = host.Config.toJSON()
+  const field = Object.values(schema.refs).find(ref => ref?.meta?.default === true)
+  assert.ok(field !== undefined, 'enabled must default to true')
+  assert.equal(field.type, 'boolean')
+  assert.equal(typeof host.apply, 'function')
+  // The client addresses exactly the namespace the row declares.
+  assert.equal(api.__test.SETTINGS_NS, host.SETTINGS_NAMESPACE)
 })

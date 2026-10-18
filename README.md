@@ -36,6 +36,25 @@ DSH 的模型选择器由 `@deepseek-ai/dsh-client-ui-model-selection` 提供。
 - **选择行为不变**：提交的仍是该行自己的 `provider/model` 对，选择、历史记录、KV 缓存
   的行为都不受影响；hover 文案保留原名。
 
+### 显示开关（设置 → 通用）
+
+插件在 **设置 → 通用** 里增加一行开关：
+
+> **模型选择器显示模型 id**  
+> 开启时，模型选择器显示模型 id（悬停可看展示名）；关闭后恢复 DSH 默认的展示名显示。  
+> `[ ●———]`
+
+行为：
+
+| 状态 | 表现 |
+| --- | --- |
+| 开（默认） | 选择器显示模型 id；目录里的 `name` 临时改为 id，详情面板等处也是 id |
+| 关 | 立即撤销本插件的登记（内置 `1017` 标签插件自动接管回来），目录 `name` 全部还原成展示名；**无需重启** |
+
+开关值持久化在 DSH 自己的设置文档里（Host 半身的 `Config.enabled`，默认 `true`），
+重装插件后仍保留。读取通道是浏览器的 `ctx.configForms`；宿主若没有设置服务，
+插件仍按"开"工作，只是不显示这一行。
+
 ### 优先级与降级
 
 - 内置 `1017` 标签插件以 priority 0 占着 `conversation.input.model.label`。本插件以
@@ -128,6 +147,26 @@ dsh --profile web --dump-config | grep -A3 model-vendor-label
 `client.js`（15 条，全绿），覆盖：id 渲染与悬停原名、目录上色与还原、优先级与注册失败
 时的警告降级、composer 座位接管、以及 package.json 契约自检。装好后打开模型菜单，行
 文案应为模型 id；控制台冒烟：`document.querySelectorAll('[data-model-id]').length` 大于 0。
+
+## 升级 DSH 时要注意什么
+
+插件装在 `~/.dsh/profiles/<profile>` 里，和全局的 `@deepseek-ai/dsh` **互不影响**：
+`npm i -g @deepseek-ai/dsh` 不会动你的插件目录。但有四处会咬人：
+
+| 风险 | 表现 | 处理 |
+| --- | --- | --- |
+| `engines.dsh` 不匹配 | 升级后插件被跳过，界面恢复默认 | 装支持新版本的插件版；或临时用 `dsh plugin --profile <p> allow-version <包>@<版本> --dsh-version <精确版本> --accept-risk` 放行 |
+| 内部契约漂移 | 槽位/设置服务改名后插件静默失效 | 看控制台有没有 `model-vendor-label` 的 warn；提 issue |
+| `link:` 依赖断链 | 启动报 `cannot resolve profile bundle` | 别移动/删除被 link 的插件目录，或用 `.tgz` 安装 |
+| pnpm 虚拟store 变更 | `ERR_PNPM_VIRTUAL_STORE_DIR_MAX_LENGTH_DIFF` | 删掉 profile 的 `node_modules` 与 `pnpm-lock.yaml` 后重新 `dsh plugin add` |
+
+升级后的三条自检：
+
+```bash
+dsh --profile web --dump-config | grep -A3 model-vendor-label   # 插件行还在？
+dsh plugin --profile web ls                                      # 依赖还在？
+# 打开页面：设置 → 通用里能看到"模型选择器显示模型 id"，模型菜单显示 id
+```
 
 ## 打包与发布（维护者）
 

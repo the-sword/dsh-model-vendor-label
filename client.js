@@ -44,6 +44,14 @@ window.__ModuleLoader__.load({
     const SHIPPED_PICKER_MODULE = '@deepseek-ai/dsh-client-ui-model-selection'
     /** Marker on the catalog accessor wrapper. */
     const PATCH = Symbol.for('dsh-model-vendor-label.directoryFor')
+    /** Settings namespace: this plugin's Host loader row id. */
+    const SETTINGS_NS = 'model-vendor-label'
+    /** The persisted field that turns the rendering on and off. */
+    const ENABLED_FIELD = 'enabled'
+    /** Settings row seat inside the General section. */
+    const SETTINGS_ROW = 'settings.general.item'
+    /** Marker on the inject wrapper so it is installed once per context. */
+    const INJECT_TRACKED = Symbol.for('dsh-model-vendor-label.inject')
 
     /**
      * Normalize one model id for display.
@@ -152,6 +160,46 @@ window.__ModuleLoader__.load({
         for (const entry of models) if (paintEntry(entry)) painted += 1
       }
       return painted
+    }
+
+    /**
+     * Every catalog entry this module may have painted: from the recorded
+     * directory handles and from the live service handle.
+     * @param ctx - client plugin context.
+     * @returns the entries, deduplicated.
+     */
+    function paintedEntries(ctx) {
+      const seen = new Set()
+      const entries = []
+      const collect = store => {
+        if (store === null || typeof store !== 'object') return
+        const groups = store.groups
+        if (!Array.isArray(groups)) return
+        for (const group of groups) {
+          const models = group?.models
+          if (!Array.isArray(models)) continue
+          for (const entry of models) {
+            if (seen.has(entry)) continue
+            seen.add(entry)
+            entries.push(entry)
+          }
+        }
+      }
+      for (const handle of handles) collect(handle?.store)
+      let service
+      try {
+        service = ctx.modelDirectories
+      } catch {
+        service = undefined
+      }
+      if (service !== null && typeof service === 'object' && typeof service.directoryFor === 'function') {
+        try {
+          collect(catalogOf(service.directoryFor.call(service)) ?? service.directoryFor.call(service)?.store)
+        } catch {
+          // An unreachable catalog contributes nothing.
+        }
+      }
+      return entries
     }
 
     /**
@@ -281,27 +329,22 @@ window.__ModuleLoader__.load({
      * Occupy the model label slot with the id renderer.
      * @param ctx - client plugin context.
      */
-    function occupyLabel(ctx) {
-      // ctx.effect pins the wait to THIS package's fiber, so unloading the
-      // package also withdraws the registration it made. If the registration
-      // still cannot land (an upgrade changing the shadowing rules), warn and
-      // leave the shipped label rendering rather than failing the load.
+    function mountLabel(ctx) {
+      // Called directly (not through ctx.effect) so the switch can unmount it
+      // again: returning the disposer lets the caller decide when the shipped
+      // label takes its slot back. Local then return: a bare
+      // `return ctx.slots.inject(...)` in this hand-written bundle has been
+      // observed to evaluate to undefined.
       try {
-        // Local then return: a bare `return ctx.slots.inject(...)` in this
-        // hand-written bundle has been observed to evaluate to undefined.
-        ctx.effect(
-          () => {
-            const occupied = ctx.slots.inject(LABEL_SLOT, () =>
-              ctx.slots.register({ name: LABEL_SLOT, priority: LABEL_PRIORITY }, props =>
-                h(ModelIdLabel, props),
-              ),
-            )
-            return occupied
-          },
-          'model-vendor-label: label occupant',
+        const occupied = ctx.slots.inject(LABEL_SLOT, () =>
+          ctx.slots.register({ name: LABEL_SLOT, priority: LABEL_PRIORITY }, props =>
+            h(ModelIdLabel, props),
+          ),
         )
+        return occupied
       } catch (error) {
         ctx.logger?.warn?.('model-vendor-label: label slot left to its shipped occupant', error)
+        return undefined
       }
     }
 
@@ -311,47 +354,175 @@ window.__ModuleLoader__.load({
      * props it would have received, so behavior is unchanged.
      * @param ctx - client plugin context.
      */
-    function takeOverSeat(ctx) {
+    function mountSeat(ctx) {
       const Picker = shippedPicker(ctx)
-      if (Picker === undefined) return
+      if (Picker === undefined) return undefined
       // The store this plugin is handed is the catalog it paints; the picker
       // keeps receiving its own (unmodified) share. Painting happens here, on
       // the seat's inject, so it lands before the picker captures a name.
       let seatedStore
       try {
-        ctx.effect(
-          () => {
-            const occupied = ctx.slots.inject(MODEL_SEAT, () => {
-              let directory
-              try {
-                directory = ctx.modelDirectories?.directoryFor?.()
-              } catch {
-                directory = undefined
-              }
-              remember(directory)
-              seatedStore = directory?.store
-              paintGroups(seatedStore?.groups)
-              const registered = ctx.slots.register(
-                { name: MODEL_SEAT, priority: SEAT_PRIORITY },
-                function ModelIdSeat(props) {
-                  paintGroups(props.store?.groups ?? seatedStore?.groups)
-                  return h(Picker, props)
-                },
-              )
-              return registered
-            })
-            return occupied
-          },
-          'model-vendor-label: composer seat',
-        )
+        const occupied = ctx.slots.inject(MODEL_SEAT, () => {
+          let directory
+          try {
+            directory = ctx.modelDirectories?.directoryFor?.()
+          } catch {
+            directory = undefined
+          }
+          remember(directory)
+          seatedStore = directory?.store
+          paintGroups(seatedStore?.groups)
+          const registered = ctx.slots.register(
+            { name: MODEL_SEAT, priority: SEAT_PRIORITY },
+            function ModelIdSeat(props) {
+              paintGroups(props.store?.groups ?? seatedStore?.groups)
+              return h(Picker, props)
+            },
+          )
+          return registered
+        })
+        return occupied
       } catch (error) {
         // No composer seat to take over (older shell) — the label slot stands.
         ctx.logger?.warn?.('model-vendor-label: composer picker left to its shipped owner', error)
+        return undefined
+      }
+    }
+
+    /**
+     * Read the persisted preference out of a config form snapshot.
+     * @param form - config form for this plugin's namespace, or undefined.
+     * @returns the enabled flag, defaulting to on.
+     */
+    function readEnabled(form) {
+      const value = form?.getSnapshot?.()?.value
+      const enabled = value?.[ENABLED_FIELD]
+      return typeof enabled === 'boolean' ? enabled : true
+    }
+
+    /** Copy for the settings row, keyed by the active document language. */
+    const ROW_COPY = {
+      zh: {
+        title: '模型选择器显示模型 id',
+        description: '开启时，模型选择器显示模型 id（悬停可看展示名）；关闭后恢复 DSH 默认的展示名显示。',
+        error: '保存失败，请重试',
+      },
+      en: {
+        title: 'Show model ids in the model picker',
+        description: 'When on, the picker shows model ids (hover for the display name). When off, DSH shows display names as usual.',
+        error: 'Could not save. Please try again.',
+      },
+    }
+
+    /**
+     * Pick the copy for the active language.
+     * @param language - document language, e.g. 'zh-CN'.
+     * @returns the two strings the row renders.
+     */
+    function rowCopy(language) {
+      return typeof language === 'string' && language.toLowerCase().startsWith('zh') ? ROW_COPY.zh : ROW_COPY.en
+    }
+
+    /** Inline styles: the row keeps the shipped rhythm without a CSS build step. */
+    const ROW_STYLE = {
+      display: 'flex',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      gap: '24px',
+      borderBottom: '0.5px solid var(--dsw-alias-border-l2, #e5e6eb)',
+      padding: '16px 0',
+    }
+    const TITLE_STYLE = { fontSize: '14px', lineHeight: '20px', color: 'var(--dsw-alias-label-primary, inherit)' }
+    const DESC_STYLE = { marginTop: '4px', fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-label-secondary, #6b6f76)' }
+    const ERROR_STYLE = { marginTop: '4px', fontSize: '12px', lineHeight: '18px', color: 'var(--dsw-alias-state-error-primary, #d4380d)' }
+
+    /**
+     * The settings row: one switch that writes the Host preference.
+     * @param props - injected face (switch binding, write verb, primitives).
+     * @returns the row element.
+     */
+    function SettingsRow({ enabled: current, setEnabled, Switch }) {
+      const enabled = current === true
+      const [busy, setBusy] = React.useState(false)
+      const [failed, setFailed] = React.useState(false)
+      const copy = rowCopy(typeof document === 'undefined' ? 'en' : document.documentElement.lang)
+      if (Switch === undefined) return null
+      return h(
+        'div',
+        { style: ROW_STYLE, 'data-model-vendor-label-row': '' },
+        h(
+          'div',
+          null,
+          h('div', { style: TITLE_STYLE }, copy.title),
+          h('div', { style: DESC_STYLE }, copy.description),
+          failed ? h('div', { role: 'alert', style: ERROR_STYLE }, copy.error) : null,
+        ),
+        h(Switch, {
+          checked: enabled,
+          disabled: busy,
+          label: copy.title,
+          onChange: next => {
+            setFailed(false)
+            setBusy(true)
+            Promise.resolve(setEnabled(next))
+              .catch(() => setFailed(true))
+              .finally(() => setBusy(false))
+          },
+        }),
+      )
+    }
+
+    /**
+     * Register the settings row while the Host serves this plugin's namespace.
+     * @param ctx - client plugin context.
+     * @param form - config form for this namespace.
+     */
+    function registerSettingsRow(ctx, form) {
+      if (form === undefined) return
+      const primitives = safeRequire('@deepseek-ai/dsh-client-ui-primitives')
+      try {
+        ctx.effect(
+          () => {
+            const dispose = ctx.configForms.whileServed([SETTINGS_NS], () =>
+              ctx.slots.inject(SETTINGS_ROW, () =>
+                ctx.slots.register(
+                  { name: SETTINGS_ROW, id: SETTINGS_NS, order: 95 },
+                  function ModelVendorLabelRow() {
+                    // Read on every render so the switch follows the persisted
+                    // value; the shell re-renders the row on document updates.
+                    return h(SettingsRow, {
+                      enabled: readEnabled(form),
+                      setEnabled: next => form.set(ENABLED_FIELD, next),
+                      Switch: primitives?.Switch,
+                    })
+                  },
+                ),
+              ),
+            )
+            return dispose
+          },
+          'model-vendor-label: settings row',
+        )
+      } catch (error) {
+        ctx.logger?.warn?.('model-vendor-label: settings row unavailable', error)
+      }
+    }
+
+    /**
+     * Read one seed module without failing the load when it is absent.
+     * @param name - module-table word.
+     * @returns the module exports, or undefined.
+     */
+    function safeRequire(name) {
+      try {
+        return require(name)
+      } catch {
+        return undefined
       }
     }
 
     /** Services this package's browser half needs. */
-    const inject = ['slots', 'modelDirectories']
+    const inject = ['slots', 'modelDirectories', 'configForms']
 
     /**
      * Plugin body.
@@ -362,34 +533,155 @@ window.__ModuleLoader__.load({
       // as a shipped package) runs in the page and keeps them. The label slot
       // covers the picker with or without the safety net.
       const hasInterval = typeof globalThis.setInterval === 'function'
-      occupyLabel(ctx)
+      const form = lookupForm(ctx)
+      // Record every inject this package installs so a mount can run them now.
+      const slots = ctx.slots
+      if (slots !== undefined && typeof slots.inject === 'function' && slots.inject[INJECT_TRACKED] !== true) {
+        const originalInject = slots.inject.bind(slots)
+        const tracked = (name, thunk) => {
+          pendingInjects.push(thunk)
+          return originalInject(name, thunk)
+        }
+        tracked[INJECT_TRACKED] = true
+        ctx.slots.inject = tracked
+      }
+
+      // Everything the switch turns on: the label occupant, the composer seat
+      // and the catalog paint. `active` makes "on" idempotent and "off" a
+      // complete undo (the shipped label takes its slot back).
+      let active = false
+      let teardown = []
+      /** Injects recorded since the last flush, run as soon as a slot is mounted. */
+      const pendingInjects = []
+
+      const mount = () => {
+        if (active) return
+        active = true
+        const stopLabel = mountLabel(ctx)
+        const stopSeat = mountSeat(ctx)
+        teardown = [stopLabel, stopSeat].filter(stop => typeof stop === 'function')
+        // Record the live directory first: unloading must be able to restore
+        // exactly the entries this mount painted.
+        remember(lookupDirectory(ctx))
+        paintCatalogs(ctx)
+        // The seat injects pull in the label occupant; with the switch on they
+        // must run now, not only on the next composer render.
+        occupySlots(pendingInjects.splice(0))
+      }
+      const unmount = () => {
+        if (!active) return
+        active = false
+        for (const stop of teardown) {
+          try {
+            stop()
+          } catch (error) {
+            ctx.logger?.warn?.('model-vendor-label: could not withdraw a registration', error)
+          }
+        }
+        teardown = []
+        restorePainted()
+      }
+
+      /** Put every painted name back, leaving untouched entries alone. */
+      function restorePainted() {
+        for (const entry of paintedEntries(ctx)) restoreEntry(entry)
+      }
+
+      // Off at load: nothing is mounted and the shipped label stays the owner.
+      // On: mount now; the subscription below keeps following the switch.
+      if (form === undefined || readEnabled(form)) mount()
       patchModelDirectories(ctx)
-      takeOverSeat(ctx)
-      if (!hasInterval) return paintCatalogs(ctx)
-      const tick = () => paintCatalogs(ctx)
-      tick()
-      let disposed = false
-      const timer = setInterval(tick, 1000)
-      // A function expression, not an arrow with a nested arrow body: the
-      // client module bundler re-hosts factory source in a way that loses the
-      // parenthesized body of such an arrow, and the disposer silently became
-      // its first statement's value.
+
+      // The repaint net keeps catalog entries painted while the switch is on,
+      // and is the only thing running when the page has no timers at all.
+      if (hasInterval) {
+        const tick = () => {
+          if (active) paintCatalogs(ctx)
+        }
+        const timer = setInterval(tick, 1000)
+        ctx.effect(
+          () => () => clearInterval(timer),
+          'model-vendor-label: catalog repaint loop',
+        )
+      }
+
+      // The switch: subscribe to the persisted preference and reconcile.
+      if (form !== undefined) {
+        const sync = () => {
+          const wanted = readEnabled(form)
+          if (wanted) mount()
+          else unmount()
+        }
+        ctx.effect(
+          () => {
+            const off = form.subscribe(sync)
+            sync()
+            return () => {
+              if (typeof off === 'function') off()
+              unmount()
+            }
+          },
+          'model-vendor-label: preference',
+        )
+      }
+
+      // Whatever the switch state, unloading the package must leave nothing
+      // behind. This runs after the preference effect's disposer (effects
+      // unwind in reverse), so it is the single place that restores the names.
       ctx.effect(
         function () {
           const dispose = () => {
-            clearInterval(timer)
-            // Cordon again: a second dispose must not restore already-restored
-            // entries or un-paint a re-painted catalog.
-            if (disposed) return
-            disposed = true
-            for (const handle of handles) {
-              for (const entry of handle?.store?.groups ?? []) restoreEntry(entry)
-            }
+            unmount()
+            restorePainted()
           }
           return dispose
         },
-        'model-vendor-label: catalog repaint loop',
+        'model-vendor-label: unload cleanup',
       )
+
+      registerSettingsRow(ctx, form)
+    }
+
+    /**
+     * The directory service handle the shell currently hands out.
+     * @param ctx - client plugin context.
+     * @returns the handle, or undefined when the catalog is not reachable.
+     */
+    function lookupDirectory(ctx) {
+      try {
+        return ctx.modelDirectories?.directoryFor?.()
+      } catch {
+        return undefined
+      }
+    }
+
+    /**
+     * Run the slot injects this package just registered. In the shell the
+     * owning seat calls them when it renders; doing it here makes a switch
+     * flip take effect immediately instead of on the next composer paint.
+     * @param ctx - client plugin context.
+     */
+    function occupySlots(thunks) {
+      for (const thunk of thunks) {
+        try {
+          if (typeof thunk === 'function') thunk({})
+        } catch {
+          // The seat runs the inject itself on its next render.
+        }
+      }
+    }
+
+    /**
+     * Look up this plugin's own settings form, tolerating an older shell.
+     * @param ctx - client plugin context.
+     * @returns the config form, or undefined when the service is absent.
+     */
+    function lookupForm(ctx) {
+      try {
+        return ctx.configForms?.get?.(SETTINGS_NS)
+      } catch {
+        return undefined
+      }
     }
 
     exports.apply = apply
@@ -399,6 +691,11 @@ window.__ModuleLoader__.load({
       ORIGINAL_NAME,
       LABEL_SLOT,
       MODEL_SEAT,
+      SETTINGS_NS,
+      ENABLED_FIELD,
+      SETTINGS_ROW,
+      readEnabled,
+      SettingsRow,
       labelText,
       ModelIdLabel,
       paintEntry,
